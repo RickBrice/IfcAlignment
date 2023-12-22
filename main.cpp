@@ -318,7 +318,8 @@ int main()
    auto vpt3 = file.addDoublet<Schema::IfcCartesianPoint>(8400.0, 133.0); // Vertical Curve Tangent (VPT), Vertical Curve #3
    auto vpc4 = file.addDoublet<Schema::IfcCartesianPoint>(9400.0, 113.0); // Vertical Curve Point (VPC),   Vertical Curve #4
    auto vpt4 = file.addDoublet<Schema::IfcCartesianPoint>(10200.0, 103.0); // Vertical Curve Tangent (VPT), Vertical Curve #4
-   auto vpoe = file.addDoublet<Schema::IfcCartesianPoint>(12800.0, 90.0); // ending
+   //auto vpoe = file.addDoublet<Schema::IfcCartesianPoint>(12800.0, 90.0); // ending (this point is beyond the end of the horizontal alignment)
+   auto vpoe = file.addDoublet<Schema::IfcCartesianPoint>(12337.05, 94.31475); // corresponds to end of horizontal alignment
 
    //
    // Build the vertical alignment segments
@@ -365,7 +366,7 @@ int main()
    vertical_segments->push(vertical_profile_segment_8.second);
 
    // Grade VPT4 to End
-   auto vertical_profile_segment_9 = create_gradient(vpt4, -0.5 / 100, 2600);
+   auto vertical_profile_segment_9 = create_gradient(vpt4, -0.5 / 100, /*2600*/2137.05); // 2600 is stated in example, but 2137.05 corresponds with the end of the horizontal alignment
    vertical_curve_segments->push(vertical_profile_segment_9.first);
    vertical_segments->push(vertical_profile_segment_9.second);
 
@@ -403,6 +404,121 @@ int main()
    create_segment_representations(file, global_placement, axis_model_representation_subcontext, horizontal_curve_segments, horizontal_segments);
    create_segment_representations(file, global_placement, axis_model_representation_subcontext, vertical_curve_segments, vertical_segments);
 
+   //
+   // Superelevation
+   //
+
+   auto surface_model_representation_subcontext = new Schema::IfcGeometricRepresentationSubContext(std::string("Surface"), std::string("Model"), geometric_representation_context, boost::none, Schema::IfcGeometricProjectionEnum::IfcGeometricProjection_MODEL_VIEW, boost::none);
+   file.addEntity(surface_model_representation_subcontext);   
+   typename aggregate_of<typename Schema::IfcProfileDef>::ptr cross_sections(new aggregate_of<typename Schema::IfcProfileDef>()); // container of roadway cross sections
+   typename aggregate_of<typename Schema::IfcAxis2PlacementLinear>::ptr cross_section_positions( new aggregate_of<typename Schema::IfcAxis2PlacementLinear>()); // container of positions where cross sections are located
+   typename aggregate_of<typename Schema::IfcObjectDefinition>::ptr superelevation_referents(new aggregate_of<typename Schema::IfcObjectDefinition>()); // container of referents for superelevation events
+
+   double w = 23.5; // half bridge width
+
+   // distance along horizontal alignment, left slope, right slope
+   std::vector<std::tuple<double, double, double>> superelevation_data
+   {
+      // Beginning of alignment
+      {0.0, -0.02, +0.02},
+
+      // Curve 1
+      {1776.79, -0.02, +0.02}, // normal crown
+      {1896.79, -0.02, -0.02}, // begin full super
+      {2016.79, -0.06, -0.06}, // begin max super
+      {3816.01, -0.06, -0.06}, // end max super
+      {3936.01, -0.02, -0.02}, // end full super
+      {4056.01, -0.02, +0.02}, // normal crown
+
+      // Curve 2
+      {5602.91, -0.02, +0.02},
+      {5700.91, +0.02, +0.02},
+      {5812.91, +0.05, +0.05},
+      {7561.03, +0.05, +0.05},
+      {7651.03, +0.02, +0.02},
+      {7771.03, -0.02, +0.02},
+
+      // Curve 3
+      { 8965.65, -0.02,  +0.02},
+      { 9085.65, +0.02,  +0.02},
+      { 9250.65, +0.075, +0.075},
+      {10149.77, +0.075, +0.075},
+      {10314.77, +0.02,  +0.02},
+      {10434.77, -0.02,  +0.02},
+
+      // End of alignment
+      {12337.05, -0.02, +0.02},
+   };
+
+   // PEnum_SideType definition
+   typename aggregate_of<typename Schema::IfcValue>::ptr side_type_enum_values(new aggregate_of<typename Schema::IfcValue>());
+   side_type_enum_values->push(new Schema::IfcLabel(std::string("LEFT")));
+   side_type_enum_values->push(new Schema::IfcLabel(std::string("RIGHT")));
+   side_type_enum_values->push(new Schema::IfcLabel(std::string("BOTH")));
+   auto PEnum_SideType = new Schema::IfcPropertyEnumeration(std::string("PEnum_SideType"), side_type_enum_values, nullptr);
+
+   for (const auto& [dist, left_slope, right_slope] : superelevation_data)
+   {
+      // create surface cross section and placement (geometric definition)
+      auto pde = new Schema::IfcPointByDistanceExpression(new Schema::IfcLengthMeasure(dist), boost::none, boost::none, boost::none, gradient_curve);
+      auto axis_placement = new Schema::IfcAxis2PlacementLinear(pde, nullptr, nullptr);
+      cross_section_positions->push(axis_placement);
+      cross_sections->push(new Schema::IfcOpenCrossProfileDef(Schema::IfcProfileTypeEnum::IfcProfileType_CURVE, boost::none, true, std::vector<double>({ w,w }), std::vector<double>({ left_slope, right_slope }), boost::none, nullptr));
+
+      // create referents for superelevation information (business logic)
+      typename aggregate_of<typename Schema::IfcObjectDefinition>::ptr referents_for_left_side_property_set(new aggregate_of<typename Schema::IfcObjectDefinition>());
+      typename aggregate_of<typename Schema::IfcObjectDefinition>::ptr referents_for_right_side_property_set(new aggregate_of<typename Schema::IfcObjectDefinition>());
+
+      // at each superelevation data point, there needs to be a referent for the left and right side superelevation event
+      auto left_referent = new Schema::IfcReferent(IfcParse::IfcGlobalId(), nullptr, boost::none, boost::none, boost::none,
+         new Schema::IfcLinearPlacement(global_placement, axis_placement, nullptr),
+         nullptr, Schema::IfcReferentTypeEnum::IfcReferentType_SUPERELEVATIONEVENT);
+
+      auto right_referent = new Schema::IfcReferent(IfcParse::IfcGlobalId(), nullptr, boost::none, boost::none, boost::none,
+         new Schema::IfcLinearPlacement(global_placement, axis_placement, nullptr),
+         nullptr, Schema::IfcReferentTypeEnum::IfcReferentType_SUPERELEVATIONEVENT);
+
+      referents_for_left_side_property_set->push(left_referent);
+      referents_for_right_side_property_set->push(right_referent);
+      superelevation_referents->push(left_referent);
+      superelevation_referents->push(right_referent);
+
+      {
+         // define and assign property set (Pset_Superelevation) for the left side slope
+         typename aggregate_of<typename Schema::IfcProperty>::ptr pset_superelevation_properties(new aggregate_of<typename Schema::IfcProperty>());
+         typename aggregate_of<typename Schema::IfcValue>::ptr enum_value(new aggregate_of<typename Schema::IfcValue>());
+         enum_value->push(new Schema::IfcLabel(std::string("LEFT")));
+
+         pset_superelevation_properties->push(new Schema::IfcPropertyEnumeratedValue(std::string("Side"), boost::none, enum_value, PEnum_SideType));
+         pset_superelevation_properties->push(new Schema::IfcPropertySingleValue(std::string("Superelevation"), boost::none, new Schema::IfcRatioMeasure(left_slope), nullptr));
+         auto property_set = new Schema::IfcPropertySet(IfcParse::IfcGlobalId(), nullptr, std::string("Pset_Superelevation"), boost::none, pset_superelevation_properties);
+
+         auto rel_defines_by_properties = new Schema::IfcRelDefinesByProperties(IfcParse::IfcGlobalId(), nullptr, boost::none, boost::none, referents_for_left_side_property_set, property_set);
+         file.addEntity(rel_defines_by_properties);
+      }
+
+      {
+         // define and assign property set (Pset_Superelevation) for the right side slope
+         typename aggregate_of<typename Schema::IfcProperty>::ptr pset_superelevation_properties(new aggregate_of<typename Schema::IfcProperty>());
+
+         typename aggregate_of<typename Schema::IfcValue>::ptr enum_value(new aggregate_of<typename Schema::IfcValue>());
+         enum_value->push(new Schema::IfcLabel(std::string("RIGHT")));
+
+         pset_superelevation_properties->push(new Schema::IfcPropertyEnumeratedValue(std::string("Side"), boost::none, enum_value, PEnum_SideType));
+         pset_superelevation_properties->push(new Schema::IfcPropertySingleValue(std::string("Superelevation"), boost::none, new Schema::IfcRatioMeasure(right_slope), nullptr));
+         auto property_set = new Schema::IfcPropertySet(IfcParse::IfcGlobalId(), nullptr, std::string("Pset_Superelevation"), boost::none, pset_superelevation_properties);
+
+         auto rel_defines_by_properties = new Schema::IfcRelDefinesByProperties(IfcParse::IfcGlobalId(), nullptr, boost::none, boost::none, referents_for_right_side_property_set, property_set);
+         file.addEntity(rel_defines_by_properties);
+      }
+   }
+
+   auto sectioned_surface = new Schema::IfcSectionedSurface(gradient_curve, cross_section_positions, cross_sections);
+   typename aggregate_of<typename Schema::IfcRepresentationItem>::ptr surface_representation_items(new aggregate_of<typename Schema::IfcRepresentationItem>());
+   surface_representation_items->push(sectioned_surface);
+   
+   auto surface_representation = new Schema::IfcShapeRepresentation(surface_model_representation_subcontext, std::string("Surface"), std::string("SectionedSurface"), surface_representation_items);
+
 
    //
    // Create the IfcAlignment
@@ -412,6 +528,7 @@ int main()
    typename aggregate_of<typename Schema::IfcRepresentation>::ptr alignment_representations(new aggregate_of<typename Schema::IfcRepresentation>());
    alignment_representations->push(footprint_shape_representation); // 2D footprint
    alignment_representations->push(axis3d_shape_representation);    // 3D curve
+   alignment_representations->push(surface_representation);         // Surface
 
    // create the alignment product definition
    auto alignment_product = new Schema::IfcProductDefinitionShape(std::string("Alignment Product Definition Shape"), boost::none, alignment_representations);
@@ -419,6 +536,32 @@ int main()
    // create the alignment
    auto alignment = new Schema::IfcAlignment(IfcParse::IfcGlobalId(), nullptr, std::string("Example Alignment"), boost::none, boost::none, global_placement, alignment_product, boost::none);
    file.addEntity(alignment);
+
+   // add stationing information to the alignment
+   typename aggregate_of<typename Schema::IfcProperty>::ptr pset_station_properties(new aggregate_of<typename Schema::IfcProperty>());
+   pset_station_properties->push(new Schema::IfcPropertySingleValue(std::string("Station"), boost::none, new Schema::IfcLengthMeasure(10000.00), nullptr));
+
+   auto property_set = new Schema::IfcPropertySet(IfcParse::IfcGlobalId(), nullptr, std::string("Pset_Stationing"), boost::none, pset_station_properties);
+   file.addEntity(property_set);
+
+   auto stationing_referent = new Schema::IfcReferent(IfcParse::IfcGlobalId(), nullptr, std::string("Start of alignment station"), boost::none, boost::none, 
+      new Schema::IfcLinearPlacement(global_placement,
+         new Schema::IfcAxis2PlacementLinear(new Schema::IfcPointByDistanceExpression(new Schema::IfcLengthMeasure(0.0), boost::none,boost::none,boost::none,gradient_curve),nullptr,nullptr),
+         nullptr),
+      nullptr, Schema::IfcReferentTypeEnum::IfcReferentType_STATION);
+   file.addEntity(stationing_referent);
+
+   typename aggregate_of<typename Schema::IfcObjectDefinition>::ptr related_stationing_objects(new aggregate_of<typename Schema::IfcObjectDefinition>());
+   related_stationing_objects->push(stationing_referent);
+
+   auto nests_stationing = new Schema::IfcRelNests(IfcParse::IfcGlobalId(), nullptr, std::string("Nests Referents with station information with alignment"), boost::none, alignment, related_stationing_objects);
+   file.addEntity(nests_stationing);
+
+   auto rel_defines_by_properties = new Schema::IfcRelDefinesByProperties(IfcParse::IfcGlobalId(), nullptr, std::string("Relates station property set to referent"), boost::none, related_stationing_objects, property_set);
+   file.addEntity(rel_defines_by_properties);
+
+   auto nests_superelevations = new Schema::IfcRelNests(IfcParse::IfcGlobalId(), nullptr, std::string("Nests Referents with superelevation information with alignment"), boost::none, alignment, superelevation_referents);
+   file.addEntity(nests_superelevations);
 
    // Nest the IfcAlignmentHorizontal and IfcAlignmentVertical with the IfcAlignment to complete the business logic
    // 4.1.4.4.1 Alignments nest horizontal and vertical layouts
